@@ -1,0 +1,3 @@
+httpx>=0.27
+pillow>=10.0
+psutil>=5.9

@@ -1,0 +1,11 @@
+[project]
+name = "computer-use-agent"
+version = "0.1.0"
+description = "Computer-use skill: Calculator, VS Code (Electron), MS Paint (vision)"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "pillow>=10.0",
+    "psutil>=5.9",
+    "python-dotenv>=1.0",
+]
