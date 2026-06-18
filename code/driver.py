@@ -216,19 +216,52 @@ def launch_app(
     return pid, window_id
 
 
-def launch_via_subprocess(argv: list[str], *, settle_s: float = 2.0) -> tuple[int, Optional[int]]:
+def launch_via_subprocess(
+    argv: list[str],
+    *,
+    settle_s: float = 2.0,
+    title_hint: Optional[str] = None,
+) -> tuple[int, Optional[int]]:
     """Launch a process directly via subprocess, bypassing the launch_app
     tool call. Use this when the tool-level flags don't reach the process
     (e.g. electron_debugging_port is a no-op on Windows) and the full
     argv must be constructed by the caller.
 
-    settle_s: seconds to wait after Popen before polling list_windows --
-    Electron apps need ~2 s to open a window after the process starts.
+    settle_s: seconds to wait after Popen before polling list_windows.
+    title_hint: if the launched process exits immediately (e.g. Electron
+        apps that delegate to an existing host process), fall back to
+        searching for the NEW window matching this title -- windows already
+        open before the launch are excluded, so a pre-existing window with
+        the same title (e.g. another VS Code instance) is not returned.
     """
+    # Snapshot existing windows so we can identify the newly-opened one.
+    title_lower = (title_hint or "").lower()
+    pre_existing: set[int] = set()
+    if title_hint:
+        pre_existing = {
+            w["window_id"]
+            for w in list_windows()
+            if title_lower in w.get("title", "").lower() and "window_id" in w
+        }
+
     proc = subprocess.Popen(argv)
     time.sleep(settle_s)
+
     window_id = find_window_for_pid(proc.pid)
-    return proc.pid, window_id
+    pid = proc.pid
+
+    if window_id is None and title_hint:
+        # Look for a window matching the title that wasn't there before launch.
+        for _ in range(12):
+            for w in list_windows():
+                if title_lower in w.get("title", "").lower():
+                    wid = w.get("window_id")
+                    wpid = w.get("pid")
+                    if wid is not None and wid not in pre_existing:
+                        return wpid, wid
+            time.sleep(0.5)
+
+    return pid, window_id
 
 
 def kill_app(pid: int) -> None:
@@ -335,19 +368,34 @@ def scroll(pid: int, window_id: int, *, dx: int = 0, dy: int = 0) -> dict:
     return call("scroll", {"pid": pid, "window_id": window_id, "dx": dx, "dy": dy})
 
 
-def type_text(pid: int, window_id: int, text: str, *, element_index: Optional[int] = None) -> dict:
+def type_text(
+    pid: int,
+    window_id: int,
+    text: str,
+    *,
+    element_index: Optional[int] = None,
+    dispatch: str = "background",
+) -> dict:
     args: dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
     if element_index is not None:
         args["element_index"] = element_index
+    if dispatch != "background":
+        args["dispatch"] = dispatch
     return call("type_text", args)
 
 
-def press_key(pid: int, window_id: int, key: str) -> dict:
-    return call("press_key", {"pid": pid, "window_id": window_id, "key": key})
+def press_key(pid: int, window_id: int, key: str, *, dispatch: str = "background") -> dict:
+    args: dict[str, Any] = {"pid": pid, "window_id": window_id, "key": key}
+    if dispatch != "background":
+        args["dispatch"] = dispatch
+    return call("press_key", args)
 
 
-def hotkey(pid: int, window_id: int, keys: list[str]) -> dict:
-    return call("hotkey", {"pid": pid, "window_id": window_id, "keys": keys})
+def hotkey(pid: int, window_id: int, keys: list[str], *, dispatch: str = "background") -> dict:
+    args: dict[str, Any] = {"pid": pid, "window_id": window_id, "keys": keys}
+    if dispatch != "background":
+        args["dispatch"] = dispatch
+    return call("hotkey", args)
 
 
 def set_value(pid: int, window_id: int, element_index: int, value: str) -> dict:

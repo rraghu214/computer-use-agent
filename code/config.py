@@ -7,6 +7,7 @@ reads its own provider keys from -- see gateway.py for why one shared
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 CODE_DIR = Path(__file__).resolve().parent
@@ -51,6 +52,33 @@ CALCULATOR_EXPECTED_RESULT = "35,416.666666666664"  # for human sanity-check onl
 VSCODE_APP_NAME = os.getenv("VSCODE_APP_NAME", "Visual Studio Code")
 VSCODE_BUNDLE_ID = os.getenv("VSCODE_BUNDLE_ID", "com.microsoft.VSCode")
 ELECTRON_DEBUG_PORT = int(os.getenv("ELECTRON_DEBUG_PORT", "9222"))
+
+
+def _find_vscode_exe() -> str:
+    """Resolve the VS Code executable on Windows.
+
+    The PATH shim (`code` / `code.cmd`) is a batch file that subprocess
+    cannot launch without shell=True.  Instead we resolve the .cmd shim to
+    the real Code.exe sitting one directory above its bin/ folder, then fall
+    back to common install locations.
+    """
+    shim = shutil.which("code.cmd") or shutil.which("code")
+    if shim:
+        p = Path(shim)
+        if p.suffix.lower() in (".cmd", ".bat"):
+            candidate = p.parent.parent / "Code.exe"
+            if candidate.exists():
+                return str(candidate)
+    for loc in [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Microsoft VS Code" / "Code.exe",
+        Path(r"C:\Program Files\Microsoft VS Code\Code.exe"),
+    ]:
+        if loc.exists():
+            return str(loc)
+    return "code"
+
+
+VSCODE_EXE = os.getenv("VSCODE_EXE", _find_vscode_exe())
 SAMPLE_PY_PATH = ASSETS_DIR / "sample.py"
 AUDIT_OUTPUT_PATH = ASSETS_DIR / "docstring_audit.md"
 

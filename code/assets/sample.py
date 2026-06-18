@@ -22,10 +22,12 @@ def calculate_emi(principal: float, annual_rate_pct: float, months: int) -> floa
 
 
 def total_interest(principal: float, emi: float, months: int) -> float:
+    """TODO: document this function."""
     return emi * months - principal
 
 
 def amortisation_schedule(principal, annual_rate_pct, months):
+    """TODO: document this function."""
     monthly_rate = annual_rate_pct / 100 / 12
     emi = calculate_emi(principal, annual_rate_pct, months)
     balance = principal
@@ -43,6 +45,7 @@ class LoanSummary:
     for display."""
 
     def __init__(self, principal: float, annual_rate_pct: float, months: int):
+        """TODO: document this function."""
         self.principal = principal
         self.annual_rate_pct = annual_rate_pct
         self.months = months
@@ -53,9 +56,11 @@ class LoanSummary:
         return f"EMI for {self.principal:,.0f} @ {self.annual_rate_pct}% over {self.months}mo: {self.emi:,.2f}"
 
     def total_payable(self):
+        """TODO: document this function."""
         return self.emi * self.months
 
     def total_interest(self):
+        """TODO: document this function."""
         return total_interest(self.principal, self.emi, self.months)
 
 
