@@ -35,7 +35,12 @@ on a real machine, and for picking the project back up in Claude Code.
 ```bash
 cp .env.example .env        # fill in at least one LLM provider key
 
-# Install dependencies with uv (https://docs.astral.sh/uv/)
+# Install cua-driver (Windows)
+irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
+# Opens new shell with cua-driver on PATH. Start daemon before running tasks:
+cua-driver serve            # keep this running (or it auto-starts at logon)
+
+# Install Python dependencies with uv (https://docs.astral.sh/uv/)
 cd code
 uv sync                     # creates .venv and installs from pyproject.toml
 
@@ -50,6 +55,12 @@ uv run python run_all.py calculator
 uv run python run_all.py vscode
 uv run python run_all.py mspaint
 ```
+
+### Windows 11 notes
+
+- **Calculator and Paint** are packaged Store apps. `launch_app(name=...)` resolves them via `shell:AppsFolder` and returns a stub pid that immediately redirects to the real process. `driver.py` handles this automatically by falling back to a title-based window search if the initial pid lookup yields no window.
+- **`press_key` / `type_text` do not reach UWP apps** (Win11 Calculator, Win11 Paint) — these tools use PostMessage which UWP's XAML input stack ignores. Task 1 clicks Calculator buttons via UIA InvokePattern (element_index) instead.
+- **`electron_debugging_port` is a no-op** in cua-driver on Windows. Task 2 launches VS Code directly via `subprocess.Popen` with `--remote-debugging-port=9222` in the argv, bypassing the `launch_app` tool entirely for this flag.
 
 The gateway starts itself on first use (`gateway.ensure_gateway()`); you
 don't need to run it separately. `cua-driver` itself must already be

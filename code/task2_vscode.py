@@ -124,12 +124,17 @@ def run() -> dict:
         log_event(run_dir, "subgoals", subgoals=subgoals)
         session = RUN_ID
 
-        pid, window_id = driver.launch_app(
-            bundle_id=VSCODE_BUNDLE_ID,
-            name=VSCODE_APP_NAME,
-            electron_debugging_port=ELECTRON_DEBUG_PORT,
-            fallback_argv=["code", "--new-window", str(SAMPLE_PY_PATH)],
-        )
+        # electron_debugging_port is a no-op in cua-driver on Windows, so
+        # we construct the argv directly and bypass the tool-call entirely.
+        # --remote-debugging-port is a native Chromium/Electron flag that VS
+        # Code inherits from Chrome; it must be in the process argv, not
+        # injected by the driver after launch.
+        pid, window_id = driver.launch_via_subprocess([
+            "code",
+            "--new-window",
+            f"--remote-debugging-port={ELECTRON_DEBUG_PORT}",
+            str(SAMPLE_PY_PATH),
+        ])
         log_event(run_dir, "launched", pid=pid, window_id=window_id)
         time.sleep(1.5)  # give the Electron debugging port a moment to attach
 

@@ -85,10 +85,15 @@ def call(tool: str, args: Optional[dict[str, Any]] = None) -> dict:
         raise DriverCallError(
             f"cua-driver call {tool} failed (exit {proc.returncode}): {proc.stderr.strip()}"
         )
+    if not proc.stdout.strip():
+        return {"ok": True}
     try:
         return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise DriverCallError(f"cua-driver call {tool} returned non-JSON: {proc.stdout!r}") from e
+    except json.JSONDecodeError:
+        # cua-driver v0.5+ returns plain-text confirmations for action tools
+        # (press_key, click, type_text, hotkey, drag, scroll, set_value).
+        # Treat any non-JSON stdout with exit 0 as a success acknowledgement.
+        return {"ok": True, "text": proc.stdout.strip()}
 
 
 # --------------------------------------------------------------------------
@@ -106,7 +111,7 @@ def list_windows(pid: Optional[int] = None) -> list[dict]:
     return windows
 
 
-def find_window_for_pid(pid: int, retries: int = 6, delay_s: float = 0.5) -> Optional[int]:
+def find_window_for_pid(pid: int, retries: int = 8, delay_s: float = 0.5) -> Optional[int]:
     """launch_app only hands back a pid -- window_id needs its own
     list_windows lookup, retried briefly in case the window hasn't
     materialised yet (the same race the guide's macOS background-launch
@@ -115,6 +120,26 @@ def find_window_for_pid(pid: int, retries: int = 6, delay_s: float = 0.5) -> Opt
         for w in list_windows(pid=pid):
             if "window_id" in w:
                 return w["window_id"]
+        time.sleep(delay_s)
+    return None
+
+
+def find_window_by_title(title_substr: str, retries: int = 10, delay_s: float = 0.5) -> Optional[tuple[int, int]]:
+    """Search all windows for one whose title contains title_substr.
+    Returns (pid, window_id) or None.
+
+    Used as a fallback for Windows 11 packaged apps (Calculator, Paint,
+    Notepad) where launch_app returns the stub launcher's pid -- the stub
+    exits and the real app process has a completely different pid.
+    """
+    title_substr_lower = title_substr.lower()
+    for _ in range(retries):
+        for w in list_windows():
+            if title_substr_lower in w.get("title", "").lower():
+                wid = w.get("window_id")
+                wpid = w.get("pid")
+                if wid is not None and wpid is not None:
+                    return wpid, wid
         time.sleep(delay_s)
     return None
 
@@ -160,6 +185,7 @@ def launch_app(
         args["electron_debugging_port"] = electron_debugging_port
 
     pid: Optional[int] = None
+    window_id: Optional[int] = None
     if args:
         try:
             result = call("launch_app", args)
@@ -171,21 +197,52 @@ def launch_app(
         argv = fallback_argv or [path or name or bundle_id]
         proc = subprocess.Popen(argv)  # type: ignore[arg-type]
         pid = proc.pid
-        time.sleep(1.0)  # give the OS a moment before the first list_windows poll
+        time.sleep(1.5)
 
+    # Give the app time to finish launching before polling.
+    time.sleep(1.0)
     window_id = find_window_for_pid(pid)
+
+    # On Windows 11, packaged apps (Calculator, Paint, Notepad) are launched
+    # by a stub that immediately exits and re-routes to a separate host
+    # process with a different pid.  find_window_for_pid(stub_pid) returns
+    # None.  Fall back to a title search using the app name as a hint.
+    if window_id is None and (name or bundle_id):
+        title_hint = name or (bundle_id.split("!")[-1] if bundle_id else "")
+        found = find_window_by_title(title_hint)
+        if found:
+            pid, window_id = found
+
     return pid, window_id
+
+
+def launch_via_subprocess(argv: list[str], *, settle_s: float = 2.0) -> tuple[int, Optional[int]]:
+    """Launch a process directly via subprocess, bypassing the launch_app
+    tool call. Use this when the tool-level flags don't reach the process
+    (e.g. electron_debugging_port is a no-op on Windows) and the full
+    argv must be constructed by the caller.
+
+    settle_s: seconds to wait after Popen before polling list_windows --
+    Electron apps need ~2 s to open a window after the process starts.
+    """
+    proc = subprocess.Popen(argv)
+    time.sleep(settle_s)
+    window_id = find_window_for_pid(proc.pid)
+    return proc.pid, window_id
 
 
 def kill_app(pid: int) -> None:
     call("kill_app", {"pid": pid})
 
 
-def bring_to_front(pid: int) -> None:
+def bring_to_front(pid: int, window_id: Optional[int] = None) -> None:
     """Documented no-op on macOS/Linux; works on Windows via
     SetForegroundWindow. Cheap insurance -- never required to succeed."""
     try:
-        call("bring_to_front", {"pid": pid})
+        args: dict[str, Any] = {"pid": pid}
+        if window_id is not None:
+            args["window_id"] = window_id
+        call("bring_to_front", args)
     except DriverCallError:
         pass
 

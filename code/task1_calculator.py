@@ -38,21 +38,38 @@ from recorder import recorded_run, log_event
 
 RUN_ID = "task1_calculator"
 
-# Windows Calculator accepts the same characters as its on-screen buttons
-# as direct keypresses; this maps the expression string to a press_key
-# sequence. '=' or Enter both trigger evaluation -- Enter is used here.
-_KEY_FOR_CHAR = {**{str(d): str(d) for d in range(10)}, ".": ".", "*": "*", "/": "/", "+": "+", "-": "-"}
+# Win11 Calculator is a packaged UWP app -- it ignores raw WM_KEYDOWN and
+# WM_CHAR input (press_key and type_text use PostMessage which UWP's XAML
+# input stack never sees).  The reliable path is clicking via element_index,
+# which triggers UIA's InvokePattern directly on the button, bypassing the
+# message pump entirely.  Still Layer 2a: the scan happens once, indices are
+# read from the AX tree, every subsequent click is deterministic.
+
+_BUTTON_TITLE_TO_CHAR = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "multiply by": "*", "divide by": "/", "plus": "+", "minus": "-",
+    "decimal separator": ".", "equals": "=", "clear": "C", "backspace": "⌫",
+}
+
+_CHAR_TO_BUTTON_TITLE = {v: k for k, v in _BUTTON_TITLE_TO_CHAR.items()}
 
 
-def _expression_to_keys(expr: str) -> list[str]:
-    return [_KEY_FOR_CHAR[ch] for ch in expr]
+def _build_button_map(tree_markdown: str) -> dict[str, int]:
+    """Parse element_index for each Calculator button by title (Layer 1 extraction)."""
+    import re
+    result = {}
+    for m in re.finditer(r'\[(\d+)\] Button "([^"]+)"', tree_markdown):
+        idx, title = int(m.group(1)), m.group(2).lower()
+        result[title] = idx
+    return result
 
 
 def run() -> dict:
     driver.ensure_daemon()
     subgoals = planner.decompose(
         f"Compute {CALCULATOR_EXPRESSION} in Calculator and read the result",
-        known_subgoals=[f"Launch Calculator", f"Type {CALCULATOR_EXPRESSION}", "Press Enter", "Read the display"],
+        known_subgoals=["Launch Calculator", f"Type {CALCULATOR_EXPRESSION}", "Click Equals", "Read the display"],
     )
 
     with recorded_run(RUN_ID) as run_dir:
@@ -70,16 +87,33 @@ def run() -> dict:
             state = recovery.recover_from_precondition(pid, window_id)
         log_event(run_dir, "scanned", element_count=state.get("element_count"))
 
-        for key in _expression_to_keys(CALCULATOR_EXPRESSION):
-            driver.press_key(pid, window_id, key)
-        driver.press_key(pid, window_id, "Enter")
-        log_event(run_dir, "keys_sent", expression=CALCULATOR_EXPRESSION)
+        btn_map = _build_button_map(state.get("tree_markdown", ""))
+        log_event(run_dir, "button_map", count=len(btn_map))
+
+        # Clear any previous entry, then enter the expression.
+        if "clear" in btn_map:
+            driver.click(pid, window_id, element_index=btn_map["clear"])
+
+        for ch in CALCULATOR_EXPRESSION:
+            title = _CHAR_TO_BUTTON_TITLE.get(ch)
+            if title and title in btn_map:
+                driver.click(pid, window_id, element_index=btn_map[title])
+            else:
+                log_event(run_dir, "unmapped_char", ch=ch)
+
+        if "equals" in btn_map:
+            driver.click(pid, window_id, element_index=btn_map["equals"])
+        log_event(run_dir, "expression_entered", expression=CALCULATOR_EXPRESSION)
+
+        # "Display is N" -- match only up to the closing double-quote so the
+        # element metadata ([id=CalculatorResults ...]) is not captured.
+        _DISPLAY_RE = r'Display is ([^"]+)'
 
         final_state = action.verify(
             pid, window_id,
-            predicate=lambda s: perception.extract_direct(s.get("tree_markdown", ""), r"Display is (.+)") is not None,
+            predicate=lambda s: perception.extract_direct(s.get("tree_markdown", ""), _DISPLAY_RE) is not None,
         )
-        result = perception.extract_direct(final_state.get("tree_markdown", ""), r"Display is (.+)")
+        result = perception.extract_direct(final_state.get("tree_markdown", ""), _DISPLAY_RE)
         log_event(run_dir, "result", result=result)
 
         print(f"[task1] {CALCULATOR_EXPRESSION} = {result}")

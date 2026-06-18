@@ -15,27 +15,23 @@ trusting it*.
 
 ## What has and hasn't been verified
 
-**Verified by actually running it in a sandbox:**
-- `llm_gatewayV9` boots cleanly with zero API keys configured (graceful
-  empty-provider degradation, not a crash) -- confirmed via `python3
-  main.py` and hitting `/v1/routers`, `/v1/providers`, `/v1/capabilities`.
-- `code/gateway.py`'s path math (`Path(__file__).resolve().parents[1] /
-  "llm_gatewayV9"`) correctly resolves to the bundled gateway folder
-  given this repo's actual layout (`code/` and `llm_gatewayV9/` as
-  siblings at repo root).
-- All `.py` files in `code/` parse without syntax errors
-  (`ast.parse()`'d individually).
-- `code/assets/analyze.py` correctly finds 5 undocumented functions in
-  `code/assets/sample.py` (confirmed by actually running it).
-- The Task 3 star geometry (5 points around a circle, connected
-  pentagram-style) produces a sensible coordinate set (confirmed by
-  actually computing it).
+**Verified on a real Windows 11 machine (cua-driver v0.5.7):**
+- `llm_gatewayV9` boots cleanly (`uv sync` + `uv run python main.py`).
+- `code/` installs cleanly via `uv sync` (pyproject.toml added to repo).
+- cua-driver v0.5.7 installs on Windows 11 via the PowerShell script.
+- **Task 1 (Calculator) completes successfully**: `5000000*8.5/100/12 = 35,416.66666666667`.
+  Confirmed on first real run. Key runtime fixes needed (all now in code):
+  - `launch_app` for Win11 packaged apps returns a stub pid that redirects.
+    Fixed: title-based window search fallback in `driver.find_window_by_title`.
+  - `press_key` / `type_text` are ignored by UWP apps (PostMessage never
+    reaches XAML input stack). Fixed: Task 1 clicks buttons via
+    element_index (UIA InvokePattern) instead.
+  - cua-driver v0.5+ returns plain-text confirmations for action tools
+    (not JSON). Fixed: `driver.call()` gracefully handles non-JSON exit-0.
+  - `launch_app` response now includes a `windows` array; revised code reads
+    window_id from it then validates via `list_windows`.
 
-**Not yet verified -- there is no Windows machine, no `cua-driver`
-binary, no MS Paint, and no VS Code in the sandbox this was built in.**
-Everything below is reasoned from the driver guide's documented examples,
-not from an actual run. Treat all of it as the first thing to check when
-something breaks, in roughly this priority order:
+**Not yet verified on the real machine:**
 
 ### 1. `launch_app`'s Windows JSON schema (`driver.py: launch_app()`)
 
