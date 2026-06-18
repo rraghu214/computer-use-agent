@@ -31,66 +31,35 @@ trusting it*.
   - `launch_app` response now includes a `windows` array; revised code reads
     window_id from it then validates via `list_windows`.
 
-**Not yet verified on the real machine:**
+- **Task 2 (VS Code) completes successfully**: scanned `assets/sample.py`,
+  added LLM-generated docstrings to all undocumented functions/methods,
+  saved the file, and verified docstring coverage via `assets/analyze.py`
+  in the integrated terminal.
 
-### 1. `launch_app`'s Windows JSON schema (`driver.py: launch_app()`)
+- **Task 3 (MS Paint) completes successfully**: drew a five-pointed star
+  on the canvas, vision verdict confirmed `looks_like_target: True`,
+  saved result to `code/assets/mspaint_output.png`. Key runtime fixes
+  encountered and resolved:
+  - `screenshot()` must decode `screenshot_png_b64` from the JSON response
+    (cua-driver v0.5.7 on Windows does not write `screenshot_out_file`).
+  - `drag()` requires `from_x/from_y/to_x/to_y` parameter names in the
+    JSON (not `x1/y1/x2/y2`).
+  - New Paint's XAML canvas silently drops PostMessage; `dispatch="foreground"`
+    (SendInput) is required.
+  - `dispatch="foreground"` takes screen-absolute coordinates; canvas
+    offsets back-calculated from observed cursor position.
+  - Re-scanning (`action.scan()`) after clicking the Five-point star button
+    resets the shape selection; skip the post-click scan.
+  - `start_recording()` hooks block SendInput; call `stop_recording()`
+    before the draw drag and `start_recording()` after.
 
-The guide's only worked examples are macOS (`bundle_id`) and one
-ambiguous VS Code Electron example that doesn't specify an OS. There is
-no Windows-native example (a Calculator or Paint launch) anywhere in the
-source material. Run this on the real machine first:
+**Remaining open item:**
 
-```
-cua-driver describe launch_app
-```
+### `page` tool's action enum (`task2_vscode.py`)
 
-and compare against what `launch_app()` sends. If the real schema wants
-something other than `name`/`bundle_id`/`path`, this is a one-function
-fix -- everything downstream (window discovery, scanning, action
-dispatch) is unaffected since they all just consume the returned `pid`.
-
-### 2. The `page` tool's action enum (`driver.py: page()`, used in `task2_vscode.py`)
-
-Only one example exists anywhere in the source material:
-`{"action": "click", "selector": "..."}`. `task2_vscode.py` deliberately
-uses only that one action, with the exact selector from the guide's own
-example (`.tabs-container .tab.active`), specifically to avoid guessing
-at action names that might not exist. If you want to extend Task 2's CDP
-usage (e.g. reading editor text via DOM rather than the file-read this
-project uses instead), run:
-
-```
-cua-driver describe page
-```
-
-first.
-
-### 3. MS Paint version (`task3_mspaint.py`)
-
-Windows 11 may launch the classic `mspaint.exe` or a Store-distributed
-redesign depending on the build/update channel. Their toolbars differ in
-AX layout, but this task never reads the toolbar's AX tree -- only the
-canvas screenshot -- so this shouldn't actually matter. If it does turn
-out to matter (e.g. the Store version sandboxes screenshot access
-differently), that's worth a note back in this file.
-
-### 4. The Save-As dialog's actual layout (`task3_mspaint.py`)
-
-`perception.judge_action()` is asked to find the filename field and Save
-button from the dialog's AX tree -- this is the one place in the whole
-project that exercises the literal Layer 2b pattern (AX markdown + goal
--> cheap LLM -> `{"verdict": "act", "action": {...}}`) for real, so it's
-worth watching closely on the first run. If the judgment call
-consistently escalates instead of acting, the dialog's tree_markdown is
-probably more cluttered than expected -- `perception.trim_tree()` is the
-knob to adjust.
-
-### 5. `bring_to_front` and `Enter`-as-equals in Calculator
-
-Both are stated as working on Windows in the driver guide (no
-Windows-specific traps listed for either, unlike the macOS
-background-launch trap). Lowest-risk item on this list, included for
-completeness.
+Only one action variant (`"click"`) has a worked example in the source
+material. Task 2 deliberately uses only that one. If extending CDP usage
+later, run `cua-driver describe page` first.
 
 ## How to actually run this
 

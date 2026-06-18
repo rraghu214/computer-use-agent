@@ -328,8 +328,18 @@ def require_nonempty_tree(state: dict) -> dict:
 
 def screenshot(pid: int, window_id: int, out_file: str) -> str:
     """Convenience wrapper: there is no standalone screenshot tool, this
-    is exactly get_window_state(capture_mode="vision", ...)."""
-    get_window_state(pid, window_id, capture_mode="vision", screenshot_out_file=out_file)
+    is exactly get_window_state(capture_mode="vision", ...).
+
+    On Windows, cua-driver v0.5.7 returns the PNG as screenshot_png_b64
+    in the JSON response instead of writing to screenshot_out_file. We
+    decode and write it ourselves when the file wasn't created.
+    """
+    import base64 as _base64
+    result = get_window_state(pid, window_id, capture_mode="vision", screenshot_out_file=out_file)
+    b64 = result.get("screenshot_png_b64")
+    if b64:
+        Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_file).write_bytes(_base64.b64decode(b64))
     return out_file
 
 
@@ -357,11 +367,28 @@ def double_click(pid: int, window_id: int, *, x: int, y: int) -> dict:
     return call("double_click", {"pid": pid, "window_id": window_id, "x": x, "y": y})
 
 
-def drag(pid: int, window_id: int, *, x1: int, y1: int, x2: int, y2: int) -> dict:
-    return call(
-        "drag",
-        {"pid": pid, "window_id": window_id, "x1": x1, "y1": y1, "x2": x2, "y2": y2},
-    )
+def drag(
+    pid: int,
+    window_id: int,
+    *,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    dispatch: str = "background",
+    duration_ms: int = 500,
+    steps: int = 20,
+) -> dict:
+    # cua-driver uses from_x/from_y/to_x/to_y (not x1/y1/x2/y2).
+    # dispatch="foreground" uses SendInput (needed for XAML/WinUI canvas targets like new Paint).
+    args: dict[str, Any] = {
+        "pid": pid, "window_id": window_id,
+        "from_x": x1, "from_y": y1, "to_x": x2, "to_y": y2,
+        "duration_ms": duration_ms, "steps": steps,
+    }
+    if dispatch != "background":
+        args["dispatch"] = dispatch
+    return call("drag", args)
 
 
 def scroll(pid: int, window_id: int, *, dx: int = 0, dy: int = 0) -> dict:

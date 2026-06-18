@@ -61,6 +61,11 @@ uv run python run_all.py mspaint
 - **Calculator and Paint** are packaged Store apps. `launch_app(name=...)` resolves them via `shell:AppsFolder` and returns a stub pid that immediately redirects to the real process. `driver.py` handles this automatically by falling back to a title-based window search if the initial pid lookup yields no window.
 - **`press_key` / `type_text` do not reach UWP apps** (Win11 Calculator, Win11 Paint) — these tools use PostMessage which UWP's XAML input stack ignores. Task 1 clicks Calculator buttons via UIA InvokePattern (element_index) instead.
 - **`electron_debugging_port` is a no-op** in cua-driver on Windows. Task 2 launches VS Code directly via `subprocess.Popen` with `--remote-debugging-port=9222` in the argv, bypassing the `launch_app` tool entirely for this flag.
+- **cua-driver screenshot returns `screenshot_png_b64`** in the JSON response body instead of writing to `screenshot_out_file` on Windows. `driver.screenshot()` decodes and writes the file itself.
+- **`drag()` uses `from_x/from_y/to_x/to_y`** (not `x1/y1/x2/y2`) in cua-driver v0.5.7.
+- **New Paint canvas is a XAML/WinUI control** that ignores PostMessage mouse events. `drag(dispatch="foreground")` (SendInput path) is required to draw on the canvas.
+- **`dispatch="foreground"` takes screen-absolute coordinates**, not screenshot-space coordinates. For a 1920×1020 maximised Paint window at (0,0), the default canvas occupies screen pixels approximately (685, 422)–(1236, 770).
+- **`start_recording()` hooks interfere with foreground drag.** Task 3 calls `stop_recording()` before the shape-draw drag and `start_recording()` after so the trajectory is paused only for that single step.
 
 The gateway starts itself on first use (`gateway.ensure_gateway()`); you
 don't need to run it separately. `cua-driver` itself must already be
@@ -142,14 +147,27 @@ is mandatory for this task -- not an empty `element_count`, but the
 simple fact that no other perception channel for canvas content was
 ever going to exist.
 
-The star's geometry (five points around a circle, connected in a
-pentagram pattern) is computed with plain trigonometry, not asked of a
-vision model staring at a blank canvas -- there's nothing to perceive
-yet at that point, only coordinates to compute. Vision is reserved for
-afterward: a screenshot of the drawn result goes to the gateway's
-`/v1/vision` endpoint with a yes/no-plus-feedback schema, asking whether
-it actually looks like the target. One corrective redraw pass happens if
-not, bounded by `PAINT_MAX_STEPS`.
+The task scans the AX tree (Layer 2a) to find and click Paint's
+built-in **Five-point star** shape button (AX element_index 38 in the
+default toolbar layout). This is architecturally cleaner than computing
+pentagram stroke geometry by hand -- the AX tree already encodes which
+button arms the right tool. After clicking the shape button, the task
+does NOT re-scan: calling `action.scan()` (UIA) immediately after
+clicking a shape-tool button resets the shape selection in Windows 11
+new Paint. Instead it proceeds directly to the drag.
+
+Drawing uses `driver.drag(dispatch="foreground")` (the SendInput path),
+not the default `dispatch="background"` (PostMessage). New Paint's
+canvas is a XAML/WinUI control that silently drops PostMessage mouse
+events. The foreground drag takes screen-absolute coordinates computed
+from the live window bounds returned by `list_windows`. The trajectory
+recorder is paused around the drag step because cua-driver's recording
+hooks interfere with foreground SendInput on Windows.
+
+Vision is reserved for afterward: a screenshot of the drawn result goes
+to the gateway's `/v1/vision` endpoint with a yes/no-plus-feedback
+schema, asking whether the canvas actually shows a star. One corrective
+redraw pass happens if not, bounded by `PAINT_MAX_STEPS`.
 
 Saving switches back to Layer 2b deliberately: the Save-As dialog is a
 native Win32 dialog, fully AX-readable, so `perception.judge_action()`
@@ -169,25 +187,30 @@ convention (`The cost ledger tags calls under agent: computer`), with
 scoping. No provider is pinned in code -- if you want deterministic
 routing, edit `llm_gatewayV9/agent_routing.yaml`, not the Python.
 
-## Failure modes anticipated, not yet encountered
+## Runtime findings (Windows 11, cua-driver v0.5.7)
 
-This build hasn't been run against the real Windows machine yet, so this
-section is what's been reasoned through rather than what's actually
-broken -- `HANDOFF.md` lists every specific thing worth verifying on the
-first real run, and this section should be updated with what actually
-happened once that run exists.
+All three tasks have been run and verified on the target Windows 11
+machine. The issues below were encountered and fixed during those runs.
 
-- **launch_app's exact Windows JSON schema is unconfirmed.** The driver
-  guide's only worked examples use `bundle_id` (macOS) or a bare `name`
-  (the VS Code Electron example, which doesn't specify an OS). `launch_app()`
-  tries the documented shape first and falls back to a plain `subprocess.Popen`
-  + `list_windows` poll if the tool call itself errors.
+- **`launch_app` returns a stub pid** for Windows 11 Store apps
+  (Calculator, Paint). The stub exits immediately; `find_window_for_pid`
+  returns None. `driver.py` already falls back to a `find_window_by_title`
+  search, which correctly picks up the real host process.
+- **`screenshot_png_b64` in JSON response** (not a file). cua-driver
+  v0.5.7 on Windows returns the PNG encoded in the JSON body rather than
+  writing `screenshot_out_file`. `driver.screenshot()` decodes and writes
+  the file itself.
+- **`drag()` parameter names** are `from_x/from_y/to_x/to_y` in the CLI
+  (not `x1/y1/x2/y2`). Fixed in `driver.drag()`.
+- **New Paint canvas drops PostMessage** mouse events (XAML/WinUI
+  input model). `dispatch="foreground"` (SendInput) is required.
+- **`dispatch="foreground"` uses screen-absolute coordinates**, not the
+  screenshot-space coordinates that the background path uses.
+- **UIA scan resets Paint shape selection.** Calling `action.scan()`
+  after clicking a shape-tool button de-selects the tool. Task 3 skips
+  the post-click re-scan and proceeds directly to drag.
+- **`start_recording()` blocks foreground drag.** cua-driver's trajectory
+  recording hooks intercept SendInput events. Task 3 calls
+  `stop_recording()` before the draw drag and `start_recording()` after.
 - **The `page` tool's action enum beyond `"click"` is unconfirmed** --
-  only one worked example exists in the source material. Task 2 keeps
-  its CDP usage to that one documented call rather than guessing at
-  further action names.
-- **MS Paint's actual launched version is unknown** -- Windows 11 may
-  open the classic `mspaint.exe` or a Store-distributed redesign
-  depending on the build. The toolbar's AX layout differs between them,
-  but the canvas-is-a-blank-bitmap property (the actual reason this task
-  needs vision) holds either way.
+  Task 2 keeps its CDP usage to the one documented call shape.
