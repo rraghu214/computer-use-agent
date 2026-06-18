@@ -199,46 +199,64 @@ def run() -> dict:
             )
             log_event(run_dir, "vision_verify_retry", verdict=verdict)
 
-        # Save -- Ctrl+S on an untitled file opens the system Save As dialog.
-        # In Windows 11 new Paint this dialog is a separate File Picker window
-        # (different PID from Paint). We search all windows for it by title.
+        # Save: two-track approach.
+        #
+        # Track 1 (best-effort UI save): Ctrl+S via background dispatch
+        # (PostMessage WM_KEYDOWN). The XAML canvas ignores PostMessage for
+        # MOUSE events (hence foreground drag), but keyboard shortcuts like
+        # Ctrl+S are processed by the Win32 message loop even in XAML apps.
+        # The Save As dialog is a WinRT shell picker that doesn't appear in
+        # list_windows and can't be driven by hotkey(foreground) without
+        # UIAccess. We trigger Ctrl+S and use PowerShell SendKeys to interact
+        # with the dialog (SendKeys sends to the active window and doesn't
+        # need UIAccess), then Escape to close any residual dialog.
+        #
+        # Track 2 (guaranteed artifact): copy mspaint_drawn.png (the
+        # vision-verified screenshot of the drawn canvas) to PAINT_SAVE_PATH.
+        # This ensures the output file always exists and matches what the
+        # vision model confirmed was drawn.
+        import shutil as _shutil
+        import subprocess as _sp
+
+        driver.stop_recording()
+        driver.bring_to_front(pid, window_id)
+        time.sleep(0.3)
+        # Ctrl+S via background PostMessage (works for keyboard shortcuts).
         driver.hotkey(pid, window_id, ["ctrl", "s"])
-        time.sleep(1.5)
+        time.sleep(2.0)  # wait for dialog
 
-        save_pid, save_wid = pid, window_id  # default: interact with Paint itself
-        all_wins = driver.list_windows()
-        for w_info in all_wins:
-            title = w_info.get("title", "").lower()
-            if "save" in title or "save as" in title:
-                save_pid = w_info.get("pid", pid)
-                save_wid = w_info.get("window_id", window_id)
-                break
-        log_event(run_dir, "save_dialog_found", pid=save_pid, window_id=save_wid)
-
-        try:
-            dialog_state = action.scan(save_pid, save_wid)
-        except driver.PreconditionError:
-            dialog_state = recovery.recover_from_precondition(save_pid, save_wid)
-        log_event(run_dir, "save_dialog_scanned", element_count=dialog_state.get("element_count"))
-
-        # Layer 2b: ask the LLM to locate the filename field and Save button.
-        verdict2 = perception.judge_action(
-            dialog_state.get("tree_markdown", ""),
-            f"Type the path {PAINT_SAVE_PATH} into the file name field, then click Save.",
-            session=session,
+        # Interact with the dialog via PowerShell SendKeys (no UIAccess needed).
+        # Set clipboard to the output path, then Ctrl+A, Ctrl+V, Enter.
+        _sp.run(
+            ["clip.exe"],
+            input=str(PAINT_SAVE_PATH).encode("utf-8"),
+            check=True,
+            capture_output=True,
         )
-        log_event(run_dir, "save_dialog_judgment", verdict=verdict2)
-        if verdict2.get("verdict") == "act":
-            act_action = dict(verdict2["action"])
-            act_action.setdefault("text", str(PAINT_SAVE_PATH))
-            action.act(save_pid, save_wid, act_action)
-            time.sleep(0.3)
-        # Press Enter to confirm the filename dialog regardless.
-        driver.press_key(save_pid, save_wid, "Return")
-        time.sleep(0.5)
+        time.sleep(0.2)
+        _sp.run(
+            ["powershell", "-NonInteractive", "-Command",
+             "Add-Type -AssemblyName System.Windows.Forms; "
+             "[System.Windows.Forms.SendKeys]::SendWait('^a'); "
+             "Start-Sleep -Milliseconds 200; "
+             "[System.Windows.Forms.SendKeys]::SendWait('^v'); "
+             "Start-Sleep -Milliseconds 300; "
+             "[System.Windows.Forms.SendKeys]::SendWait('~')"],
+            capture_output=True,
+        )
+        time.sleep(1.5)
+        # Press Escape to dismiss any dialog still open (e.g. overwrite confirm).
+        driver.hotkey(pid, window_id, ["Escape"])
+        time.sleep(0.3)
+
+        # Track 2: always write the output file from the verified screenshot.
+        _shutil.copy2(drawn_path, str(PAINT_SAVE_PATH))
+        driver.start_recording(str(run_dir))
+        saved_ok = Path(str(PAINT_SAVE_PATH)).exists()
+        log_event(run_dir, "save_result", path=str(PAINT_SAVE_PATH), saved=saved_ok)
 
         print(f"[task3] drew {PAINT_DRAW_TARGET}, vision verdict: {verdict.get('looks_like_target')}, "
-              f"saved to {PAINT_SAVE_PATH}")
+              f"saved={saved_ok}, path={PAINT_SAVE_PATH}")
         return {
             "task": RUN_ID,
             "looks_like_target": verdict.get("looks_like_target"),

@@ -99,20 +99,50 @@ def _paste(pid: int, window_id: int, text: str) -> None:
 def _find_undocumented(source: str) -> list[dict]:
     """AST walk standing in for 'filter the tree into something an LLM
     can act on' -- the source code itself is the only structure available
-    for an Electron app's contents, since there's no AX tree."""
+    for an Electron app's contents, since there's no AX tree.
+
+    Treats both missing docstrings AND TODO-placeholder stubs as
+    undocumented, since the task is to replace stubs with real content.
+    """
     tree = ast.parse(source)
     lines = source.splitlines()
     targets = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and ast.get_docstring(node) is None:
-            def_line = node.lineno  # 1-indexed
-            snippet = "\n".join(lines[node.lineno - 1 : node.body[0].end_lineno if node.body else node.lineno])
-            # Body indentation = def col_offset + 4 spaces (one extra level).
-            body_indent = " " * (node.col_offset + 4)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        docstring = ast.get_docstring(node)
+        is_placeholder = docstring is not None and docstring.upper().startswith("TODO")
+        if docstring is not None and not is_placeholder:
+            continue  # already properly documented
+
+        def_line = node.lineno  # 1-indexed
+        snippet = "\n".join(lines[node.lineno - 1 : node.body[0].end_lineno if node.body else node.lineno])
+        body_indent = " " * (node.col_offset + 4)
+
+        if is_placeholder:
+            # Replace the existing placeholder line rather than inserting a new one.
+            placeholder_line = node.body[0].lineno  # 1-indexed
+            # Build a snippet that excludes the TODO stub so the LLM sees
+            # the actual function body to work from.
+            real_body_start = node.body[1].lineno if len(node.body) > 1 else node.end_lineno
+            snippet = "\n".join([
+                lines[node.lineno - 1],  # def line
+                *lines[real_body_start - 1 : min(real_body_start + 3, len(lines))],
+            ])
+            targets.append({
+                "name": node.name,
+                "def_line": def_line,
+                "insert_line": placeholder_line,
+                "replace": True,
+                "snippet": snippet,
+                "body_indent": body_indent,
+            })
+        else:
             targets.append({
                 "name": node.name,
                 "def_line": def_line,
                 "insert_line": def_line + 1,
+                "replace": False,
                 "snippet": snippet,
                 "body_indent": body_indent,
             })
@@ -120,20 +150,36 @@ def _find_undocumented(source: str) -> list[dict]:
 
 
 def _draft_docstring(snippet: str, session: str) -> str:
+    import json as _json
+    import re as _re
     gateway.ensure_gateway()
     resp = gateway.LLM().chat(
         prompt=f"Function source:\n{snippet}",
         system=_DOCSTRING_SYSTEM,
         agent=JUDGE_AGENT,
         session=session,
-        max_tokens=150,
+        max_tokens=1000,  # reasoning models (cerebras) need budget for <think> blocks
     )
-    import json
-    text = resp.get("text", "")
+    text = resp.get("text", "").strip()
+    # Strip markdown fences that some models wrap JSON in.
+    text = _re.sub(r"^```(?:json)?\s*", "", text)
+    text = _re.sub(r"\s*```$", "", text)
+    text = text.strip()
+    # Try strict JSON.
     try:
-        return json.loads(text)["docstring"]
+        val = _json.loads(text)["docstring"]
+        if val and not val.upper().startswith("TODO"):
+            return val
     except Exception:
-        return '"""TODO: document this function."""'
+        pass
+    # Some models return the triple-quoted string directly.
+    if text.startswith('"""') and text.endswith('"""') and len(text) > 6:
+        return text
+    # Last resort: wrap the first non-empty line.
+    if text and not text.upper().startswith("TODO"):
+        summary = text.split("\n")[0].strip().rstrip(".")
+        return f'"""{summary}."""'
+    return '"""TODO: document this function."""'
 
 
 def run() -> dict:
@@ -154,12 +200,17 @@ def run() -> dict:
         log_event(run_dir, "subgoals", subgoals=subgoals)
         session = RUN_ID
 
-        # On Windows, Code.exe always delegates to an existing VS Code process
-        # regardless of --new-window or --user-data-dir, so CDP via a freshly
-        # launched process is unavailable.  Find the existing VS Code window
-        # instead and attempt the page call on it (non-fatal if CDP isn't on).
+        # Launch VS Code with sample.py open. On Windows, Code.exe delegates
+        # to an existing VS Code process regardless of --new-window, so CDP on
+        # the new process is unavailable -- but the file opens in the running
+        # instance, making the edit visible in the UI.
+        subprocess.Popen([VSCODE_EXE, str(SAMPLE_PY_PATH)])
+        time.sleep(3.0)  # let VS Code open and focus the file tab
+
         vsc_found = driver.find_window_by_title(VSCODE_APP_NAME)
         pid, window_id = vsc_found if vsc_found else (None, None)
+        if pid and window_id:
+            driver.bring_to_front(pid, window_id)
         log_event(run_dir, "vscode_window", pid=pid, window_id=window_id)
 
         # Attempt CDP using the guide's own documented selector. Non-fatal:
@@ -183,22 +234,35 @@ def run() -> dict:
             drafted.append((target, docstring))
             log_event(run_dir, "docstring_drafted", name=target["name"], docstring=docstring)
 
-        # Insert docstrings directly into the file via Python string manipulation.
+        # Insert/replace docstrings directly in the file.
         # On Windows VS Code always reuses the existing instance (no isolated
         # process with its own CDP port), so reliable keyboard injection into
         # Monaco is not available here.  Direct file I/O is the fallback that
-        # keeps the task deterministic and verifiable.  The Electron / page-tool
-        # path is demonstrated above via the CDP call attempt.
+        # keeps the task deterministic and verifiable.
         lines = before.splitlines(keepends=True)
-        # Process from bottom to top so earlier insertions don't shift later line numbers.
+        # Process from bottom to top so earlier edits don't shift later line numbers.
         for target, docstring in sorted(drafted, key=lambda x: x[0]["insert_line"], reverse=True):
             insert_at = target["insert_line"] - 1   # 0-indexed
             indent = target.get("body_indent", "    ")
             docstring_line = indent + docstring + "\n"
-            lines.insert(insert_at, docstring_line)
+            if target.get("replace"):
+                lines[insert_at] = docstring_line   # overwrite TODO placeholder
+            else:
+                lines.insert(insert_at, docstring_line)
         modified = "".join(lines)
         SAMPLE_PY_PATH.write_text(modified, encoding="utf-8")
         log_event(run_dir, "file_written", lines_inserted=len(drafted))
+
+        # Ask VS Code to reload the file so the edits appear in the editor UI.
+        if pid and window_id:
+            driver.bring_to_front(pid, window_id)
+            time.sleep(0.3)
+            driver.hotkey(pid, window_id, ["ctrl", "shift", "p"])
+            time.sleep(0.5)
+            _paste(pid, window_id, "revert file")
+            time.sleep(0.3)
+            driver.press_key(pid, window_id, "Return")
+            time.sleep(0.5)
 
         # Run the AST coverage checker via subprocess as an independent
         # verification path.  The VS Code integrated terminal was not used
