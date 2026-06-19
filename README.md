@@ -5,7 +5,7 @@ through `cua-driver`, using a free-tier multi-provider LLM gateway
 (`llm_gatewayV9`, bundled in this repo) for every judgment and vision
 call. No paid APIs, no third-party agentic frameworks.
 
-## Repo layout
+## 1. Repo layout
 
 ```
 computer-use-agent/
@@ -30,7 +30,7 @@ computer-use-agent/
 See `HANDOFF.md` for the things worth verifying before/while running this
 on a real machine, and for picking the project back up in Claude Code.
 
-## Setup
+## 2. Setup
 
 ```bash
 cp .env.example .env        # fill in at least one LLM provider key
@@ -60,7 +60,7 @@ The gateway starts itself on first use (`gateway.ensure_gateway()`); you
 don't need to run it separately. `cua-driver` itself must already be
 installed and on PATH — this project only wraps it.
 
-## Architecture: the five layers
+## 3. Architecture: the five layers
 
 `cua-driver` gives perception and action -- launching apps, walking
 accessibility trees, synthesising clicks/keystrokes, screenshots,
@@ -83,7 +83,7 @@ AX+LLM / Layer 3 vision) -- the five layers above are the architecture;
 the cost cascade is a decision made *within* the perception-interpretation
 and vision-fallback layers about which is cheapest for a given step.
 
-### Architecture diagram
+### 3.1 Architecture diagram
 
 ```
                       COMPUTER-USE AGENT — 5-LAYER CASCADE
@@ -140,7 +140,7 @@ and vision-fallback layers about which is cheapest for a given step.
     Layer 1 extract → Layer 2a AX → Layer 2b AX+LLM → Layer 3 vision
 ```
 
-### Task flow diagrams
+### 3.2 Task flow diagrams
 
 **Task 1 — Calculator (zero LLM, zero vision)**
 
@@ -227,9 +227,9 @@ and vision-fallback layers about which is cheapest for a given step.
     └─ Result: vision=True, saved=True   [ONE vision call — only place needed]
 ```
 
-## The three tasks
+## 4. The three tasks
 
-### Task 1 -- Calculator (zero vision, Layer 2a)
+### 4.1 Task 1 -- Calculator (zero vision, Layer 2a)
 
 Computes `5000000*8.5/100/12` (an EMI-style calculation) via a fixed
 sequence of `press_key` calls -- no LLM in the loop at all, since both
@@ -242,7 +242,7 @@ to judge, only a value to read and compare.
 zero-vision floor of the cascade -- the assignment's "at least one task
 completes with zero vision calls" constraint.
 
-### Task 2 -- VS Code (Electron / CDP)
+### 4.2 Task 2 -- VS Code (Electron / CDP)
 
 VS Code is Electron, so to the accessibility API it's a single opaque
 `AXWebArea` -- there's no AX tree to scan no matter how the window is
@@ -269,7 +269,7 @@ editor's own state.
 **Cascade decision:** Electron is forced regardless of preference --
 there is no AX-tree path available for this app at all.
 
-### Task 3 -- MS Paint (genuine Layer 3 vision)
+### 4.3 Task 3 -- MS Paint (genuine Layer 3 vision)
 
 The fully reasoned version of why this counts as vision is in the
 docstring at the top of `task3_mspaint.py`; the short version: MS
@@ -312,7 +312,7 @@ not per task.
 the one place where escalating to vision isn't a fallback from a failed
 AX read -- it's the only channel that was ever available.
 
-## Cost-ledger tagging
+## 5. Cost-ledger tagging
 
 All gateway calls use `agent="computer"`, matching the driver guide's own
 convention (`The cost ledger tags calls under agent: computer`), with
@@ -347,7 +347,7 @@ response. Task 3 uses Gemini free-tier for the vision verification call, so $0.0
 The gateway's `pricing.py` returns $0 for free-tier providers; switch to a paid tier and
 the dollar figure will reflect actual cost.
 
-## Evidence and artifacts
+## 6. Evidence and artifacts
 
 Every run produces a `runs/<task>_<timestamp>/` trajectory directory via
 `cua-driver`'s `start_recording`/`stop_recording`. Each trajectory contains
@@ -361,7 +361,7 @@ JSON event logs (`events.jsonl`) covering all tool calls made during that run.
 | sample.py (baseline) | `code/assets/sample.py` | Committed with TODO-stub docstrings; `git checkout code/assets/sample.py` restores undocumented state |
 | Trajectory logs | `runs/task1_calculator_*/` `runs/task2_vscode_*/` `runs/task3_mspaint_*/` | JSON event streams from cua-driver recording |
 
-### Layer visibility in console output
+### 6.1 Layer visibility in console output
 
 Each task prints its active architecture layer at every step so the cascade
 discipline is visible at runtime without reading the source code:
@@ -449,7 +449,7 @@ discipline is visible at runtime without reading the source code:
   task3_mspaint: vision=True  save_path=mspaint_output_200626_0041.png
 ```
 
-### Screenshots
+### 6.2 Screenshots
 
 > Replace each placeholder below with a markdown image after your next run.
 
@@ -479,7 +479,7 @@ the vision model inspected to confirm the star was drawn successfully.
 
 ---
 
-## Runtime findings (Windows 11, cua-driver v0.5.7)
+## 7. Runtime findings (Windows 11, cua-driver v0.5.7)
 
 All three tasks have been run and verified on the target Windows 11
 machine. The issues below were encountered and fixed during those runs.
@@ -516,7 +516,7 @@ machine. The issues below were encountered and fixed during those runs.
   monitor programmatically without raw Win32 `SetWindowPos` calls (not exposed
   by cua-driver). This is a hard Windows limitation, not a bug.
 
-## Windows 11 notes
+## 8. Windows 11 notes
 
 Quick-reference for issues specific to running on Windows 11 with cua-driver v0.5.7:
 
