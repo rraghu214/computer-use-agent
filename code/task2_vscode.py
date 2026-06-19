@@ -184,6 +184,8 @@ def _draft_docstring(snippet: str, session: str) -> str:
 
 def run() -> dict:
     driver.ensure_daemon()
+
+    print(f"[task2] LAYER 1 — Goal decomposition: audit and document sample.py in VS Code")
     subgoals = planner.decompose(
         "Audit sample.py for undocumented functions in VS Code and add docstrings",
         known_subgoals=[
@@ -204,41 +206,59 @@ def run() -> dict:
         # to an existing VS Code process regardless of --new-window, so CDP on
         # the new process is unavailable -- but the file opens in the running
         # instance, making the edit visible in the UI.
-        subprocess.Popen([VSCODE_EXE, str(SAMPLE_PY_PATH)])
+        print(f"[task2] Action — launching VS Code with {SAMPLE_PY_PATH.name}")
+        subprocess.Popen(
+            [VSCODE_EXE, str(SAMPLE_PY_PATH)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(3.0)  # let VS Code open and focus the file tab
 
         vsc_found = driver.find_window_by_title(VSCODE_APP_NAME)
         pid, window_id = vsc_found if vsc_found else (None, None)
         if pid and window_id:
             driver.bring_to_front(pid, window_id)
+            print(f"[task2] Launch OK — VS Code visible, pid={pid}, window_id={window_id}")
+        else:
+            print(f"[task2] Note — VS Code window not enumerated (Electron WinUI); editing via file I/O")
         log_event(run_dir, "vscode_window", pid=pid, window_id=window_id)
 
         # Attempt CDP using the guide's own documented selector. Non-fatal:
         # the session VS Code was not started with --remote-debugging-port,
         # so this demonstrates the page-tool invocation path even though the
         # specific CDP call will fail on an existing process.
+        print(f"[task2] Action — attempting CDP page click on active tab (Electron path)")
         try:
             driver.page(pid, "click", selector=".tabs-container .tab.active")
             log_event(run_dir, "page_click_active_tab", ok=True)
+            print(f"[task2] CDP page click succeeded")
         except driver.DriverCallError as e:
             log_event(run_dir, "page_click_active_tab", ok=False, error=str(e))
+            print(f"[task2] CDP not available on existing VS Code process — continuing via file I/O")
 
+        print(f"[task2] LAYER 1 — Perception/AST: parsing sample.py for undocumented/placeholder functions")
         before = perception.read_file(str(SAMPLE_PY_PATH))
         targets = _find_undocumented(before)
-        log_event(run_dir, "undocumented_found", count=len(targets), names=[t["name"] for t in targets])
+        names = [t["name"] for t in targets]
+        log_event(run_dir, "undocumented_found", count=len(targets), names=names)
+        print(f"[task2] LAYER 1 — found {len(targets)} functions needing docstrings: {', '.join(names)}")
 
         # Draft docstrings via cheap LLM (Layer 2b) for each undocumented function.
+        print(f"[task2] LAYER 2b — LLM judgment: drafting docstrings (one LLM call per function)")
         drafted: list[tuple[dict, str]] = []
         for target in targets:
+            print(f"[task2] LAYER 2b — calling LLM for: {target['name']}...")
             docstring = _draft_docstring(target["snippet"], session)
             drafted.append((target, docstring))
             log_event(run_dir, "docstring_drafted", name=target["name"], docstring=docstring)
+            print(f"[task2] LAYER 2b — {target['name']} → {docstring}")
 
         # Insert/replace docstrings directly in the file.
         # On Windows VS Code always reuses the existing instance (no isolated
         # process with its own CDP port), so reliable keyboard injection into
         # Monaco is not available here.  Direct file I/O is the fallback that
         # keeps the task deterministic and verifiable.
+        print(f"[task2] Action — writing {len(drafted)} docstrings to {SAMPLE_PY_PATH.name}")
         lines = before.splitlines(keepends=True)
         # Process from bottom to top so earlier edits don't shift later line numbers.
         for target, docstring in sorted(drafted, key=lambda x: x[0]["insert_line"], reverse=True):
@@ -252,16 +272,18 @@ def run() -> dict:
         modified = "".join(lines)
         SAMPLE_PY_PATH.write_text(modified, encoding="utf-8")
         log_event(run_dir, "file_written", lines_inserted=len(drafted))
+        print(f"[task2] Action — file written; triggering VS Code 'Revert File' to refresh editor")
 
         # Ask VS Code to reload the file so the edits appear in the editor UI.
         if pid and window_id:
             driver.bring_to_front(pid, window_id)
             time.sleep(0.3)
-            driver.hotkey(pid, window_id, ["ctrl", "shift", "p"])
-            time.sleep(0.5)
+            # foreground dispatch (SendInput) so Electron/Chromium actually receives the shortcut
+            driver.hotkey(pid, window_id, ["ctrl", "shift", "p"], dispatch="foreground")
+            time.sleep(0.8)
             _paste(pid, window_id, "revert file")
-            time.sleep(0.3)
-            driver.press_key(pid, window_id, "Return")
+            time.sleep(0.5)
+            driver.press_key(pid, window_id, "Return", dispatch="foreground")
             time.sleep(0.5)
 
         # Run the AST coverage checker via subprocess as an independent
@@ -269,20 +291,25 @@ def run() -> dict:
         # here because reliable foreground keyboard injection into the session
         # VS Code terminal is not available on this configuration; subprocess
         # is the equivalent second code path.
+        print(f"[task2] Recovery/Verify — running analyze.py to confirm AST coverage")
         analyze_result = subprocess.run(
             [sys.executable, str(ASSETS_DIR / "analyze.py")],
             capture_output=True, text=True,
         )
         log_event(run_dir, "analyze_output", stdout=analyze_result.stdout, stderr=analyze_result.stderr)
 
+        print(f"[task2] LAYER 1 — Perception/AST verify: re-parsing sample.py to count remaining stubs")
         after = perception.read_file(str(SAMPLE_PY_PATH))
         remaining = _find_undocumented(after)
         log_event(run_dir, "verified", remaining_undocumented=len(remaining))
+        documented = len(targets) - len(remaining)
+        print(f"[task2] LAYER 1 — verification: {documented}/{len(targets)} functions documented "
+              f"({len(remaining)} remaining)")
 
         audit_lines = [
             "# Docstring Audit -- sample.py",
             "",
-            f"Functions documented this run: {len(targets) - len(remaining)} / {len(targets)}",
+            f"Functions documented this run: {documented} / {len(targets)}",
             "",
             "## Added",
         ]
@@ -290,11 +317,13 @@ def run() -> dict:
             audit_lines.append(f"- `{t['name']}` (line {t['def_line']})")
         AUDIT_OUTPUT_PATH.write_text("\n".join(audit_lines) + "\n", encoding="utf-8")
 
-        print(f"[task2] documented {len(targets) - len(remaining)}/{len(targets)} functions; "
+        print(f"[task2] LAYER 1 — Vision fallback: NOT USED (AST parse is sufficient for text verification)")
+        print(f"[task2] documented {documented}/{len(targets)} functions; "
               f"audit written to {AUDIT_OUTPUT_PATH}")
+        gateway.print_cost_summary(RUN_ID)
         return {
             "task": RUN_ID,
-            "documented": len(targets) - len(remaining),
+            "documented": documented,
             "total_undocumented_found": len(targets),
             "run_dir": str(run_dir),
         }

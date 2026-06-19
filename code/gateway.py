@@ -148,4 +148,30 @@ def vision(
     return r.json()
 
 
-__all__ = ["ensure_gateway", "shutdown_gateway", "LLM", "vision", "GATEWAY_URL", "GATEWAY_DIR"]
+def print_cost_summary(session: str) -> None:
+    """Query the gateway's cost ledger for a session and print a human-readable summary.
+
+    Called at the end of each task run so the console shows turns, tokens, and
+    estimated cost without the caller having to know the gateway's URL or schema.
+    """
+    try:
+        data = LLM().cost_by_agent(session=session)
+        rows_flat = [(ag, r) for ag, rows in data.items() for r in rows]
+        if not rows_flat:
+            print(f"  [cost] session='{session}': no LLM calls recorded (deterministic path, zero LLM cost)")
+            return
+        total_in = sum(r.get("in_tok", 0) or 0 for _, r in rows_flat)
+        total_out = sum(r.get("out_tok", 0) or 0 for _, r in rows_flat)
+        total_dollars = sum(r.get("dollars", 0.0) or 0.0 for _, r in rows_flat)
+        print(f"  ── LLM cost ledger ── session='{session}'")
+        for ag, r in rows_flat:
+            print(f"    [{ag}]  {r.get('provider','?')}/{r.get('model','?')}  "
+                  f"in={r.get('in_tok', 0):,}  out={r.get('out_tok', 0):,} tok  "
+                  f"${r.get('dollars', 0.0):.5f}  latency={r.get('latency_ms', 0)}ms")
+        print(f"  TOTAL: {len(rows_flat)} LLM turn(s)  |  "
+              f"{total_in:,} in + {total_out:,} out tokens  |  ${total_dollars:.5f}")
+    except Exception as e:
+        print(f"  [cost] unable to fetch ledger for '{session}': {e}")
+
+
+__all__ = ["ensure_gateway", "shutdown_gateway", "LLM", "vision", "print_cost_summary", "GATEWAY_URL", "GATEWAY_DIR"]
