@@ -54,11 +54,22 @@ class DriverCallError(RuntimeError):
 # Daemon lifecycle
 # --------------------------------------------------------------------------
 
-def ensure_daemon() -> None:
+def ensure_daemon(cdp_port: Optional[int] = None) -> None:
     """Start `cua-driver serve` if it is not already running. Idempotent.
-    Exact shape from the guide's own example."""
+
+    cdp_port: when supplied, sets CUA_DRIVER_CDP_PORT in the daemon's
+    environment so page/click_element can use CDP for Electron targets.
+    Requires the target app to be running with --remote-debugging-port=<port>.
+    Only takes effect on a fresh start; if the daemon is already running,
+    restart it manually before calling this (kill cua-driver.exe and rerun).
+    """
     if subprocess.run([CUA_DRIVER_BIN, "status"], capture_output=True).returncode != 0:
-        subprocess.Popen([CUA_DRIVER_BIN, "serve"])
+        env = None
+        if cdp_port is not None:
+            import os as _os
+            env = _os.environ.copy()
+            env["CUA_DRIVER_CDP_PORT"] = str(cdp_port)
+        subprocess.Popen([CUA_DRIVER_BIN, "serve"], env=env)
         time.sleep(DAEMON_START_WAIT_S)
 
 

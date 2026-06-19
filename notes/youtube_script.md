@@ -52,14 +52,25 @@ Goal: compute `5000000 × 8.5 ÷ 100 ÷ 12` (an EMI calculation).
 
 Goal: replace TODO placeholder docstrings in `sample.py` with real ones.
 
-VS Code is Electron — no accessibility tree. Instead:
+VS Code is Electron. Its UI isn't a normal accessibility tree — it's a Chrome
+renderer. To drive it, we launch VS Code with `--remote-debugging-port=9222` and
+call cua-driver's **`page` tool** with the `click_element` action to click the
+active editor tab by CSS selector (`.tabs-container .tab.active`). That's the
+Chrome DevTools Protocol — same wire format as Playwright or Puppeteer, but through
+cua-driver so the whole agent stays in one place.
+
+After that single CDP call:
 - Parse `sample.py` using Python's `ast` module → find 5 TODO stubs
-- Call a cheap LLM (Gemini, free tier) once per function → get a real docstring
+- Call a cheap LLM once per function → get a real docstring
 - Write the updated file to disk
-- Tell VS Code to "Revert File" so the editor shows the change
+- Tell VS Code to "Revert File" (Ctrl+Shift+P) so the editor shows the change
 - Verify by re-parsing the AST → 0 stubs remaining
 
 **Result: 5/5 functions documented. Zero vision calls. 5 LLM calls.**
+
+*Pre-condition for the CDP call: set `CUA_DRIVER_CDP_PORT=9222` in the shell
+and restart the cua-driver daemon once. VS Code must be closed so it starts fresh
+with the debug port. After that, every run picks up the active tab automatically.*
 
 ---
 

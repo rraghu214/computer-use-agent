@@ -183,7 +183,11 @@ def _draft_docstring(snippet: str, session: str) -> str:
 
 
 def run() -> dict:
-    driver.ensure_daemon()
+    # Pass cdp_port so the daemon starts with CUA_DRIVER_CDP_PORT set --
+    # required for page/click_element to reach VS Code via CDP.
+    # If the daemon is already running without the port, kill cua-driver.exe
+    # manually once before starting, so it picks up the env var on next start.
+    driver.ensure_daemon(cdp_port=ELECTRON_DEBUG_PORT)
 
     print(f"[task2] LAYER 1 — Goal decomposition: audit and document sample.py in VS Code")
     subgoals = planner.decompose(
@@ -202,13 +206,15 @@ def run() -> dict:
         log_event(run_dir, "subgoals", subgoals=subgoals)
         session = RUN_ID
 
-        # Launch VS Code with sample.py open. On Windows, Code.exe delegates
-        # to an existing VS Code process regardless of --new-window, so CDP on
-        # the new process is unavailable -- but the file opens in the running
-        # instance, making the edit visible in the UI.
+        # Launch VS Code with sample.py open and the Electron debug port set.
+        # electron_debugging_port in launch_app is a no-op on Windows, so we
+        # use subprocess.Popen directly with --remote-debugging-port.  VS Code
+        # must NOT already be running when this task starts: Code.exe delegates
+        # to the existing process (which won't have the debug port), so CDP will
+        # fail if VS Code was open before. Close VS Code before running this task.
         print(f"[task2] Action — launching VS Code with {SAMPLE_PY_PATH.name}")
         subprocess.Popen(
-            [VSCODE_EXE, str(SAMPLE_PY_PATH)],
+            [VSCODE_EXE, f"--remote-debugging-port={ELECTRON_DEBUG_PORT}", str(SAMPLE_PY_PATH)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -223,18 +229,20 @@ def run() -> dict:
             print(f"[task2] Note — VS Code window not enumerated (Electron WinUI); editing via file I/O")
         log_event(run_dir, "vscode_window", pid=pid, window_id=window_id)
 
-        # Attempt CDP using the guide's own documented selector. Non-fatal:
-        # the session VS Code was not started with --remote-debugging-port,
-        # so this demonstrates the page-tool invocation path even though the
-        # specific CDP call will fail on an existing process.
-        print(f"[task2] Action — attempting CDP page click on active tab (Electron path)")
+        # Use the page tool's `click_element` action with a CSS selector to
+        # focus the active editor tab.  On Windows, `click_element` internally
+        # calls `execute_javascript`, which uses CDP.  The daemon was restarted
+        # above with CUA_DRIVER_CDP_PORT set, and VS Code was launched with
+        # --remote-debugging-port, so the CDP connection should succeed.
+        print(f"[task2] Action — page click_element on active tab via CDP (Electron path)")
         try:
-            driver.page(pid, "click", selector=".tabs-container .tab.active")
+            driver.page(pid, "click_element", selector=".tabs-container .tab.active",
+                        window_id=window_id)
             log_event(run_dir, "page_click_active_tab", ok=True)
-            print(f"[task2] CDP page click succeeded")
+            print(f"[task2] LAYER 2a — page click_element succeeded (UIA/IAccessible2 path)")
         except driver.DriverCallError as e:
             log_event(run_dir, "page_click_active_tab", ok=False, error=str(e))
-            print(f"[task2] CDP not available on existing VS Code process — continuing via file I/O")
+            print(f"[task2] page click_element failed (non-fatal) — continuing via file I/O: {e}")
 
         print(f"[task2] LAYER 1 — Perception/AST: parsing sample.py for undocumented/placeholder functions")
         before = perception.read_file(str(SAMPLE_PY_PATH))

@@ -381,28 +381,28 @@ discipline is visible at runtime without reading the source code:
   [cost] session='task1_calculator': no LLM calls recorded (deterministic path, zero LLM cost)
 ```
 
-**Task 2 — VS Code (Layer 2b, 5 LLM calls)**
+**Task 2 — VS Code (Electron CDP + Layer 2b, 5 LLM calls)**
 
 ```
 [task2] LAYER 1 — Goal decomposition: audit and document sample.py in VS Code
 [task2] Action — launching VS Code with sample.py
-[task2] Launch OK — VS Code visible, pid=35440, window_id=330108
-[task2] Action — attempting CDP page click on active tab (Electron path)
-[task2] CDP not available on existing VS Code process — continuing via file I/O
+[task2] Launch OK — VS Code visible, pid=26924, window_id=5311316
+[task2] Action — page click_element on active tab via CDP (Electron path)
+[task2] LAYER 2a — page click_element succeeded (UIA/IAccessible2 path)
 [task2] LAYER 1 — Perception/AST: parsing sample.py for undocumented/placeholder functions
 [task2] LAYER 1 — found 5 functions needing docstrings: total_interest, amortisation_schedule,
          __init__, total_payable, total_interest
 [task2] LAYER 2b — LLM judgment: drafting docstrings (one LLM call per function)
 [task2] LAYER 2b — calling LLM for: total_interest...
-[task2] LAYER 2b — total_interest → """Generate amortisation schedule for a loan given principal, annual rate, and months."""
+[task2] LAYER 2b — total_interest → """Generate amortisation schedule for a loan."""
 [task2] LAYER 2b — calling LLM for: amortisation_schedule...
-[task2] LAYER 2b — amortisation_schedule → """Generate amortisation schedule rows for given loan parameters."""
+[task2] LAYER 2b — amortisation_schedule → """Generate amortisation schedule for a loan."""
 [task2] LAYER 2b — calling LLM for: __init__...
-[task2] LAYER 2b — __init__ → """Initialize loan with principal, rate, term, and compute EMI."""
+[task2] LAYER 2b — __init__ → """Initialize loan with principal, rate, months and compute EMI."""
 [task2] LAYER 2b — calling LLM for: total_payable...
-[task2] LAYER 2b — total_payable → """Calculate total interest over the loan term."""
+[task2] LAYER 2b — total_payable → """Calculate total interest over the loan period."""
 [task2] LAYER 2b — calling LLM for: total_interest...
-[task2] LAYER 2b — total_interest → """Calculate total interest based on principal, EMI, and months."""
+[task2] LAYER 2b — total_interest → """Calculate total interest from principal, EMI, and months."""
 [task2] Action — writing 5 docstrings to sample.py
 [task2] Action — file written; triggering VS Code 'Revert File' to refresh editor
 [task2] Recovery/Verify — running analyze.py to confirm AST coverage
@@ -411,9 +411,9 @@ discipline is visible at runtime without reading the source code:
 [task2] LAYER 1 — Vision fallback: NOT USED (AST parse is sufficient for text verification)
 [task2] documented 5/5 functions; audit written to code/assets/docstring_audit.md
   ── LLM cost ledger ── session='task2_vscode'
-    [computer]  cerebras/?  in=3,549  out=6,854 tok  $0.00520  latency=0ms
+    [computer]  cerebras/?  in=7,513  out=13,781 tok  $0.01065  latency=0ms
     [computer]  gemini/?  in=436  out=80 tok  $0.00000  latency=0ms
-  TOTAL: 2 LLM turn(s)  |  3,985 in + 6,934 out tokens  |  $0.00520
+  TOTAL: 2 LLM turn(s)  |  7,949 in + 13,861 out tokens  |  $0.01065
 ```
 
 **Task 3 — MS Paint (Layer 3 vision)**
@@ -504,8 +504,13 @@ machine. The issues below were encountered and fixed during those runs.
 - **`start_recording()` blocks foreground drag.** cua-driver's trajectory
   recording hooks intercept SendInput events. Task 3 calls
   `stop_recording()` before the draw drag and `start_recording()` after.
-- **The `page` tool's action enum beyond `"click"` is unconfirmed** —
-  Task 2 keeps its CDP usage to the one documented call shape.
+- **The `page` tool's `click_element` action (not `"click"`)** is the
+  correct action name. `click_element` uses `execute_javascript` internally
+  on Windows, which requires CDP (`--remote-debugging-port` on VS Code and
+  `CUA_DRIVER_CDP_PORT=<port>` in cua-driver's environment at daemon start).
+  One-time setup: kill `cua-driver.exe`, set `$env:CUA_DRIVER_CDP_PORT="9222"`,
+  then restart (`cua-driver serve`). VS Code must be closed before running
+  so it starts fresh with `--remote-debugging-port=9222`.
 - **Windows 11 app windows open on the primary monitor.** `SetForegroundWindow`
   guarantees focus, not monitor placement. Apps cannot be moved to a secondary
   monitor programmatically without raw Win32 `SetWindowPos` calls (not exposed
